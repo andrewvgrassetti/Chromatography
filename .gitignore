@@ -1,0 +1,25 @@
+# R history and workspace
+.Rhistory
+.RData
+.Rproj.user/
+.Ruserdata
+
+# macOS artifacts
+.DS_Store
+
+# VS Code
+.vscode/*.log
+
+# renv package management
+renv/library/
+.Rprofile.user
+
+# Data directories
+data/raw/
+# !data/raw/example.csv  # Uncomment if you want to keep a tiny example file
+
+# Output files
+outputs/**/*.png
+outputs/**/*.pdf
+outputs/**/*.svg
+outputs/**/*.html
