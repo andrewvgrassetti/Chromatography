@@ -19,16 +19,18 @@ suppressWarnings({
 `%||%` <- function(a, b) if (!is.null(a)) a else b
 
 # Build ggplot from a Chromatogram object with options
-build_plot <- function(chrom, show_fit = TRUE, show_peaks = TRUE, label_peaks = TRUE, palette = NULL) {
-  df <- data.frame(
-    time = chrom$time,
-    raw = chrom$intensity,
-    smoothed = chrom$smoothed
-  )
-  p <- ggplot(df, aes(time)) +
-    geom_line(aes(y = raw), alpha = 0.45, linewidth = 0.5) +
-    geom_line(aes(y = smoothed), linewidth = 0.8) +
-    labs(x = "Time", y = "Intensity", title = "Chromatogram")
+build_plot <- function(chrom, show_fit = TRUE, show_peaks = TRUE, label_peaks = TRUE,
+                       palette = NULL, show_area_pct = TRUE) {
+
+  df <- data.frame(time = chrom$time, intensity = chrom$intensity)
+
+  p <- ggplot(df, aes(x = time, y = intensity)) +
+    geom_line(linewidth = 0.8, color = "#2c3e50") +
+    labs(title = "Chromatogram", x = "Time (min)", y = "Absorbance") +
+    theme_classic(base_size = 13) +   # white background, classic theme
+    theme(panel.background = element_rect(fill = "white"),
+          plot.background = element_rect(fill = "white"),
+          axis.line = element_line(color = "black"))
 
   # Fitted curve (if available)
   if (show_fit && !is.null(chrom$fit_params) && all(c("a","b","c") %in% names(chrom$fit_params))) {
@@ -49,27 +51,41 @@ build_plot <- function(chrom, show_fit = TRUE, show_peaks = TRUE, label_peaks = 
         } 
     }   
 
-  # Peaks
-  if (show_peaks && !is.null(chrom$peaks) && nrow(chrom$peaks) > 0 && "time" %in% names(chrom$peaks)) {
-    peaks_df <- chrom$peaks[!is.na(chrom$peaks$time), , drop = FALSE]
-    if (nrow(peaks_df) > 0) {
-      peaks_df$peak_id <- factor(seq_len(nrow(peaks_df)))
-      pal <- palette %||% hue_pal()(nrow(peaks_df))
-      p <- p +
-        geom_vline(data = peaks_df, aes(xintercept = time, color = peak_id), linetype = "dotted", linewidth = 0.8) +
-        scale_color_manual(values = pal, guide = "none")
+    # --- Peaks (directly on raw data) ---
+    if (show_peaks && !is.null(chrom$peaks) && nrow(chrom$peaks) > 0) {
+        peaks_df <- chrom$peaks[!is.na(chrom$peaks$time), , drop = FALSE]
+        peaks_df$peak_id <- factor(seq_len(nrow(peaks_df)))
 
-      if (label_peaks) {
-        p <- p + geom_text(
-          data = peaks_df,
-          aes(x = time, y = max(df$smoothed, na.rm = TRUE) * 1.05,
-              label = sprintf("t=%.2f", time),
-              color = peak_id),
-          angle = 90, vjust = -0.5, size = 3, show.legend = FALSE
-        )
-      }
-    }
-  }
+        pal <- palette %||% hue_pal()(nrow(peaks_df))
+        p <- p +
+            geom_vline(data = peaks_df,
+                    aes(xintercept = time, color = peak_id),
+                    linetype = "dotted", linewidth = 0.8, alpha = 0.9) +
+            scale_color_manual(values = pal, guide = "none")
+
+        # compute % area if requested
+        if (show_area_pct && "area" %in% names(peaks_df)) {
+            total_area <- sum(peaks_df$area, na.rm = TRUE)
+            peaks_df$area_pct <- (peaks_df$area / total_area) * 100
+        }
+        if (label_peaks) {
+            label_df <- peaks_df
+            label_df$label <- if (show_area_pct && "area_pct" %in% names(label_df)) {
+                sprintf("t=%.2f\n%.1f%%", label_df$time, label_df$area_pct)
+            } else {
+                sprintf("t=%.2f", label_df$time)
+            }
+
+            p <- p + geom_text(
+                data = label_df,
+                aes(x = time, y = max(df$intensity, na.rm = TRUE) * 1.05,
+                label = label, color = peak_id),
+                angle = 90, vjust = -0.5, size = 3, show.legend = FALSE
+                )
+            }
+        }
+    
+
 
   p
 }
@@ -107,13 +123,10 @@ ui <- page_fillable(
       fileInput("csv", "Upload CSV (2 columns: time, intensity — no header needed)", accept = c(".csv")),
       checkboxInput("use_demo", "Use demo data if no file", TRUE),
       hr(),
-      h4("Smoothing"),
-      sliderInput("win", "Window (points)", min = 5, max = 51, value = 15, step = 2),
-      sliderInput("poly", "Polynomial order", min = 2, max = 5, value = 3, step = 1),
-      hr(),
       h4("Peak Picking"),
       sliderInput("min_height_frac", "Min height (fraction of max)", min = 0.01, max = 1, value = 0.1, step = 0.01),
       numericInput("min_dist", "Min distance (points)", value = 5, min = 1, step = 1),
+      checkboxInput("show_area_pct", "Show area percentages", TRUE),
       checkboxInput("show_fit", "Show fitted Gaussian", TRUE),
       checkboxInput("show_peaks", "Show peaks", TRUE),
       checkboxInput("label_peaks", "Label peaks", TRUE),
@@ -209,7 +222,7 @@ server <- function(input, output, session) {
   chrom_reactive <- reactive({
     df <- data_reactive()
     obj <- Chromatogram$new(df$time, df$intensity)
-    obj$smooth(window = input$win, poly = input$poly)
+
 
     # Fit single Gaussian just to show the overlay if desired (optional)
     suppressWarnings( try(obj$fit_gaussian(), silent = TRUE) )
@@ -239,7 +252,8 @@ server <- function(input, output, session) {
     p <- build_plot(chrom, show_fit = input$show_fit,
                     show_peaks = input$show_peaks,
                     label_peaks = input$label_peaks,
-                    palette = pal)
+                    palette = pal,
+                    show_area_pct = input$show_area_pct)
     # recolor base layers (raw/smoothed)
     # p <- p +
     #   scale_colour_identity() +
