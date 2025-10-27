@@ -92,7 +92,7 @@ Chromatogram <- R6Class("Chromatogram",
         peaks_df <- as.data.frame(peaks)
         peaks_df$time <- self$time[peaks_df$position]
         # Filter out peaks narrower than 3 points
-        peaks_df <- peaks_df[(peaks_df$end - peaks_df$start) >= 3, , drop = FALSE]
+        peaks_df <- peaks_df[(peaks_df$end - peaks_df$start) >= 20, , drop = FALSE]
         self$peaks <- peaks_df  
         message(nrow(peaks_df), " peaks detected after filtering.")
         }
