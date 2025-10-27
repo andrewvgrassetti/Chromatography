@@ -76,31 +76,49 @@ Chromatogram <- R6Class("Chromatogram",
     },
 
     plot = function(save_path = NULL) {
-      df <- data.frame(time = self$time,
-                       raw = self$intensity,
-                       smoothed = self$smoothed)
-      p <- ggplot2::ggplot(df, ggplot2::aes(time)) +
-        ggplot2::geom_line(ggplot2::aes(y = raw), alpha = 0.5, color = "gray40") +
-        ggplot2::geom_line(ggplot2::aes(y = smoothed), color = "blue") +
-        ggplot2::labs(title = "Chromatogram", x = "Time", y = "Intensity")
+        df <- data.frame(
+            time = self$time,
+            raw = self$intensity,
+            smoothed = self$smoothed
+        )
 
-      if (!is.null(self$fit_params)) {
-        fit_curve <- self$fit_params["a"] *
-          exp(-((self$time - self$fit_params["b"])^2) /
-              (2 * self$fit_params["c"]^2))
-        df$fit <- fit_curve
-        p <- p + ggplot2::geom_line(ggplot2::aes(y = fit),
-                                    color = "green", linetype = "dashed")
-      }
+        p <- ggplot2::ggplot(df, ggplot2::aes(time)) +
+            ggplot2::geom_line(ggplot2::aes(y = raw), alpha = 0.5, color = "gray40") +
+            ggplot2::geom_line(ggplot2::aes(y = smoothed), color = "blue") +
+            ggplot2::labs(title = "Chromatogram", x = "Time", y = "Intensity")
 
-      if (is.null(save_path)) {
+        # Add fitted curve only if fit_params exist
+        if (!is.null(self$fit_params)) {
+            gaussian_model <- function(x, a, b, c) {
+                a * exp(-((x - b)^2) / (2 * c^2))
+            }
+
+            df$fit <- gaussian_model(
+                df$time,
+                self$fit_params["a"],
+                self$fit_params["b"],
+                self$fit_params["c"]
+            )
+
+        # Add fit layer only after 'fit' column exists
+        p <- p + ggplot2::geom_line(
+            data = df,
+            ggplot2::aes(y = fit),
+            color = "green",
+            linetype = "dashed"
+        )
+    }
+
+    # Save or print plot
+    if (is.null(save_path)) {
         print(p)
-      } else {
+    } else {
         dir.create(dirname(save_path), recursive = TRUE, showWarnings = FALSE)
         ggplot2::ggsave(save_path, p, width = 7, height = 4, dpi = 150)
         message("Plot saved to: ", save_path)
-      }
-      invisible(p)
     }
+    invisible(p)
+    }
+
   )
 )
