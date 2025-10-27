@@ -91,22 +91,47 @@ Chromatogram <- R6Class("Chromatogram",
         colnames(peaks) <- c("height", "position", "start", "end")
         peaks_df <- as.data.frame(peaks)
         peaks_df$time <- self$time[peaks_df$position]
-        self$peaks <- peaks_df
-        message(nrow(peaks_df), " peaks detected.")
-      }
+        # Filter out peaks narrower than 3 points
+        peaks_df <- peaks_df[(peaks_df$end - peaks_df$start) >= 3, , drop = FALSE]
+        self$peaks <- peaks_df  
+        message(nrow(peaks_df), " peaks detected after filtering.")
+        }
+      
       invisible(self)
       },
 
-    integrate_peaks = function() {
+    integrate_peaks = function(min_width = 3) {
       if (is.null(self$peaks)) stop("No peaks detected. Run $find_peaks() first.")
+      if (is.null(self$intensity)) stop("No intensity data found.")
+
       results <- self$peaks
+
       results$area <- mapply(function(start, end) {
-        start_idx <- max(1, start)
-        end_idx <- min(length(self$time), end)
-        pracma::trapz(self$time[start_idx:end_idx], self$smoothed[start_idx:end_idx])
-      }, self$peaks$start, self$peaks$end)
+        # Ensure numeric indices within bounds
+        start_idx <- as.integer(max(1, min(start, length(self$time))))
+        end_idx   <- as.integer(max(1, min(end, length(self$time))))
+
+        # Skip peaks that are too narrow
+        if ((end_idx - start_idx) < min_width) return(NA_real_)
+
+        # Subset safely
+        x <- as.numeric(self$time[start_idx:end_idx])
+        y <- as.numeric(self$intensity[start_idx:end_idx])
+
+        # Validate real numeric data
+        if (length(x) < 2 || anyNA(x) || anyNA(y)) return(NA_real_)
+
+        # Integrate
+        area <- tryCatch(pracma::trapz(x, y), error = function(e) NA_real_)
+        area
+      }, results$start, results$end)
+
+      # Drop invalid (tiny) peaks
+      valid <- which(!is.na(results$area) & results$area > 0)
+      results <- results[valid, , drop = FALSE]
+
       self$peaks <- results
-      message("Peak integration complete.")
+      message("Peak integration complete: ", nrow(results), " valid peaks.")
       invisible(self)
     },
 
