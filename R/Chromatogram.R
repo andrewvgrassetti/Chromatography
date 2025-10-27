@@ -157,13 +157,19 @@ Chromatogram <- R6Class("Chromatogram",
 
   # Add vertical lines for peaks (if found)
   if (show_peaks && !is.null(self$peaks) && nrow(self$peaks) > 0) {
-    p <- p + ggplot2::geom_vline(
-      data = self$peaks,
-      ggplot2::aes(xintercept = time),
-      color = "red",
-      linetype = "dotted",
-      alpha = 0.8
-    )
+    peaks_df$peak_id <- factor(seq_len(nrow(peaks_df)))
+
+      p <- p + ggplot2::geom_vline(
+        data = peaks_df,
+        ggplot2::aes(xintercept = time, color = peak_id),
+        linetype = "dotted",
+        linewidth = 0.7,
+        alpha = 0.9
+      ) +
+      ggplot2::scale_color_manual(
+        values = scales::hue_pal()(nrow(peaks_df)),
+        guide = "none"
+      )
 
     if (label_peaks) {
       p <- p + ggplot2::geom_text(
