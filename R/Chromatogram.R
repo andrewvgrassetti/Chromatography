@@ -122,50 +122,77 @@ Chromatogram <- R6Class("Chromatogram",
       return(df)
     },
     
-    plot = function(save_path = NULL) {
-        df <- data.frame(
-            time = self$time,
-            raw = self$intensity,
-            smoothed = self$smoothed
-        )
+    plot = function(save_path = NULL, show_peaks = TRUE, label_peaks = TRUE) {
+  df <- data.frame(
+    time = self$time,
+    raw = self$intensity,
+    smoothed = self$smoothed
+  )
 
-        p <- ggplot2::ggplot(df, ggplot2::aes(time)) +
-            ggplot2::geom_line(ggplot2::aes(y = raw), alpha = 0.5, color = "gray40") +
-            ggplot2::geom_line(ggplot2::aes(y = smoothed), color = "blue") +
-            ggplot2::labs(title = "Chromatogram", x = "Time", y = "Intensity")
+  p <- ggplot2::ggplot(df, ggplot2::aes(time)) +
+    ggplot2::geom_line(ggplot2::aes(y = raw), alpha = 0.5, color = "gray40") +
+    ggplot2::geom_line(ggplot2::aes(y = smoothed), color = "blue") +
+    ggplot2::labs(title = "Chromatogram", x = "Time", y = "Intensity")
 
-        # Add fitted curve only if fit_params exist
-        if (!is.null(self$fit_params)) {
-            gaussian_model <- function(x, a, b, c) {
-                a * exp(-((x - b)^2) / (2 * c^2))
-            }
-
-            df$fit <- gaussian_model(
-                df$time,
-                self$fit_params["a"],
-                self$fit_params["b"],
-                self$fit_params["c"]
-            )
-
-        # Add fit layer only after 'fit' column exists
-        p <- p + ggplot2::geom_line(
-            data = df,
-            ggplot2::aes(y = fit),
-            color = "green",
-            linetype = "dashed"
-        )
+  # Add fitted Gaussian curve if available
+  if (!is.null(self$fit_params)) {
+    gaussian_model <- function(x, a, b, c) {
+      a * exp(-((x - b)^2) / (2 * c^2))
     }
 
-    # Save or print plot
-    if (is.null(save_path)) {
-        print(p)
-    } else {
-        dir.create(dirname(save_path), recursive = TRUE, showWarnings = FALSE)
-        ggplot2::ggsave(save_path, p, width = 7, height = 4, dpi = 150)
-        message("Plot saved to: ", save_path)
+    df$fit <- gaussian_model(
+      df$time,
+      self$fit_params["a"],
+      self$fit_params["b"],
+      self$fit_params["c"]
+    )
+
+    p <- p + ggplot2::geom_line(
+      data = df,
+      ggplot2::aes(y = fit),
+      color = "green",
+      linetype = "dashed"
+    )
+  }
+
+  # Add vertical lines for peaks (if found)
+  if (show_peaks && !is.null(self$peaks) && nrow(self$peaks) > 0) {
+    p <- p + ggplot2::geom_vline(
+      data = self$peaks,
+      ggplot2::aes(xintercept = time),
+      color = "red",
+      linetype = "dotted",
+      alpha = 0.8
+    )
+
+    if (label_peaks) {
+      p <- p + ggplot2::geom_text(
+        data = self$peaks,
+        ggplot2::aes(
+          x = time,
+          y = height + 0.05 * max(df$smoothed, na.rm = TRUE),
+          label = sprintf("t=%.2f", time)
+        ),
+        color = "red",
+        angle = 90,
+        vjust = -0.5,
+        size = 3
+      )
     }
-    invisible(p)
-    }
+  }
+
+  # Save or display the plot
+  if (is.null(save_path)) {
+    print(p)
+  } else {
+    dir.create(dirname(save_path), recursive = TRUE, showWarnings = FALSE)
+    ggplot2::ggsave(save_path, p, width = 7, height = 4, dpi = 150)
+    message("Plot saved to: ", save_path)
+  }
+
+  invisible(p)
+}
+
 
   )
 )
