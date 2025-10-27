@@ -71,67 +71,95 @@ Chromatogram <- R6Class("Chromatogram",
       return(area)
       },
     
-    find_peaks = function(min_height = NULL, min_distance = 5) {
-      # Use raw intensity instead of smoothed data
-      if (is.null(self$intensity)) {
-        stop("No intensity data available for peak finding.")
+    find_peaks = function(min_height = NULL,
+                          min_distance_min = 0.2,   # minimum spacing between peaks (minutes)
+                          min_width_min = 0.1,      # minimum peak width (minutes)
+                          min_prom_frac = 0.05) {   # minimum prominence, as fraction of max intensity
+
+      if (is.null(self$intensity) || is.null(self$time)) {
+        stop("No data available for peak finding.")
       }
 
-      # Use pracma::findpeaks on the raw signal
-      peaks <- pracma::findpeaks(
-        self$intensity,
-        minpeakheight = min_height %||% (0.1 * max(self$intensity, na.rm = TRUE)),
-        minpeakdistance = min_distance
-      )
+      # sampling interval (minutes per point)
+      dt <- suppressWarnings(median(diff(self$time), na.rm = TRUE))
+      if (!is.finite(dt) || dt <= 0) dt <- 1
 
-      if (is.null(peaks)) {
-        message("⚠️ No peaks detected.")
+      # convert time-based thresholds to points
+      dist_pts  <- max(1L, as.integer(ceiling(min_distance_min / dt)))
+      width_pts <- max(1L, as.integer(ceiling(min_width_min   / dt)))
+
+      y <- as.numeric(self$intensity)
+      ymax <- max(y, na.rm = TRUE)
+      # absolute minima for height and prominence
+      min_height_abs <- min_height %||% (0.10 * ymax)
+      min_prom_abs   <- min_prom_frac * ymax
+
+      # raw peak candidates
+      pk <- pracma::findpeaks(y,
+                              minpeakheight  = min_height_abs,
+                              minpeakdistance = dist_pts,
+                              threshold = min_prom_abs)
+
+      if (is.null(pk)) {
+        message("⚠️ No peaks detected with current thresholds.")
+        self$peaks <- NULL
+        return(invisible(self))
+      }
+
+      # pk columns: height, position, start, end
+      colnames(pk) <- c("height","position","start","end")
+      df <- as.data.frame(pk)
+
+      # clamp indices to valid range & compute time/width/prominence
+      n <- length(y)
+      df$start    <- pmax(1L, pmin(n, as.integer(df$start)))
+      df$end      <- pmax(1L, pmin(n, as.integer(df$end)))
+      df$position <- pmax(1L, pmin(n, as.integer(df$position)))
+
+      df$time       <- self$time[df$position]
+      df$width_pts  <- pmax(0L, df$end - df$start + 1L)
+      df$width_min  <- df$width_pts * dt
+      # simple prominence estimate vs bounds
+      bound_base    <- pmax(y[df$start], y[df$end])
+      df$prominence <- df$height - bound_base
+
+      # strict filtering
+      keep <- (df$width_min >= min_width_min) &
+              (df$prominence >= min_prom_abs) &
+              is.finite(df$height) & is.finite(df$time)
+
+      df <- df[keep, , drop = FALSE]
+      df <- df[order(df$time), , drop = FALSE]
+
+      # finalize
+      if (!nrow(df)) {
+        message("⚠️ All candidate peaks filtered out; relax thresholds.")
         self$peaks <- NULL
       } else {
-        colnames(peaks) <- c("height", "position", "start", "end")
-        peaks_df <- as.data.frame(peaks)
-        peaks_df$time <- self$time[peaks_df$position]
-        # Filter out peaks narrower than 3 points
-        peaks_df <- peaks_df[(peaks_df$end - peaks_df$start) >= 20, , drop = FALSE]
-        self$peaks <- peaks_df  
-        message(nrow(peaks_df), " peaks detected after filtering.")
-        }
-      
-      invisible(self)
-      },
+        self$peaks <- df
+        message(nrow(df), " peaks retained after strict filtering.")
+      }
 
-    integrate_peaks = function(min_width = 3) {
+      invisible(self)
+    },
+
+    integrate_peaks = function(min_width_pts = 3L) {
       if (is.null(self$peaks)) stop("No peaks detected. Run $find_peaks() first.")
       if (is.null(self$intensity)) stop("No intensity data found.")
 
-      results <- self$peaks
-
-      results$area <- mapply(function(start, end) {
-        # Ensure numeric indices within bounds
-        start_idx <- as.integer(max(1, min(start, length(self$time))))
-        end_idx   <- as.integer(max(1, min(end, length(self$time))))
-
-        # Skip peaks that are too narrow
-        if ((end_idx - start_idx) < min_width) return(NA_real_)
-
-        # Subset safely
-        x <- as.numeric(self$time[start_idx:end_idx])
-        y <- as.numeric(self$intensity[start_idx:end_idx])
-
-        # Validate real numeric data
+      res <- self$peaks
+      res$area <- mapply(function(s, e) {
+        s <- as.integer(max(1, min(s, length(self$time))))
+        e <- as.integer(max(1, min(e, length(self$time))))
+        if ((e - s) < min_width_pts) return(NA_real_)
+        x <- as.numeric(self$time[s:e]); y <- as.numeric(self$intensity[s:e])
         if (length(x) < 2 || anyNA(x) || anyNA(y)) return(NA_real_)
+        tryCatch(pracma::trapz(x, y), error = function(.) NA_real_)
+      }, res$start, res$end)
 
-        # Integrate
-        area <- tryCatch(pracma::trapz(x, y), error = function(e) NA_real_)
-        area
-      }, results$start, results$end)
-
-      # Drop invalid (tiny) peaks
-      valid <- which(!is.na(results$area) & results$area > 0)
-      results <- results[valid, , drop = FALSE]
-
-      self$peaks <- results
-      message("Peak integration complete: ", nrow(results), " valid peaks.")
+      res <- res[is.finite(res$area) & res$area > 0, , drop = FALSE]
+      self$peaks <- res
+      message("Peak integration complete: ", nrow(res), " valid peaks.")
       invisible(self)
     },
 
