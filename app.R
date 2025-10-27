@@ -1,4 +1,4 @@
-# app.R — Interactive chromatogram explorer with multi-plot gallery & exports
+# app.R — Interactive chromatogram explorer (raw data only, no smoothing)
 
 # ---- Packages ----
 library(shiny)
@@ -8,7 +8,6 @@ library(ggplot2)
 library(colourpicker)
 library(scales)
 
-# Optional (better TIFF/PNG rendering)
 suppressWarnings({
   if (!requireNamespace("ragg", quietly = TRUE)) {
     message("Tip: install.packages('ragg') for high-quality TIFF/PNG exports.")
@@ -18,7 +17,7 @@ suppressWarnings({
 # ---- Utilities ----
 `%||%` <- function(a, b) if (!is.null(a)) a else b
 
-# Build ggplot from a Chromatogram object with options
+# ---- Plot Builder ----
 build_plot <- function(chrom, show_fit = TRUE, show_peaks = TRUE, label_peaks = TRUE,
                        palette = NULL, show_area_pct = TRUE) {
 
@@ -27,70 +26,73 @@ build_plot <- function(chrom, show_fit = TRUE, show_peaks = TRUE, label_peaks = 
   p <- ggplot(df, aes(x = time, y = intensity)) +
     geom_line(linewidth = 0.8, color = "#2c3e50") +
     labs(title = "Chromatogram", x = "Time (min)", y = "Absorbance") +
-    theme_classic(base_size = 13) +   # white background, classic theme
-    theme(panel.background = element_rect(fill = "white"),
-          plot.background = element_rect(fill = "white"),
-          axis.line = element_line(color = "black"))
+    theme_classic(base_size = 13) +
+    theme(
+      panel.background = element_rect(fill = "white"),
+      plot.background  = element_rect(fill = "white"),
+      axis.line        = element_line(color = "black")
+    ) +
+    expand_limits(y = max(df$intensity, na.rm = TRUE) * 1.10)
 
-  # Fitted curve (if available)
-  if (show_fit && !is.null(chrom$fit_params) && all(c("a","b","c") %in% names(chrom$fit_params))) {
-    gaussian <- function(x, a, b, c) a * exp(-((x - b)^2) / (2 * c^2))
-    df$fit <- tryCatch(
-        gaussian(df$time, chrom$fit_params["a"], chrom$fit_params["b"], chrom$fit_params["c"]),
-        error = function(e) NULL
-    )
-
-    if (!is.null(df$fit) && !all(is.na(df$fit))) {
-        p <- p + geom_line(
+  # ---- Gaussian fit (optional) ----
+  if (isTRUE(show_fit) && !is.null(chrom$fit_params)) {
+    pars <- tryCatch(unlist(chrom$fit_params)[c("a", "b", "c")], error = function(e) NULL)
+    if (!is.null(pars) && all(is.finite(pars))) {
+      df$fit <- pars["a"] * exp(-((df$time - pars["b"])^2) / (2 * pars["c"]^2))
+      p <- p + geom_line(
         data = df,
         aes(y = fit),
         linetype = "dashed",
         linewidth = 0.8,
         color = "darkgreen"
-        )
-        } 
-    }   
+      )
+    }
+  }
 
-    # --- Peaks (directly on raw data) ---
-    if (show_peaks && !is.null(chrom$peaks) && nrow(chrom$peaks) > 0) {
-        peaks_df <- chrom$peaks[!is.na(chrom$peaks$time), , drop = FALSE]
-        peaks_df$peak_id <- factor(seq_len(nrow(peaks_df)))
+  # ---- Peaks ----
+  if (isTRUE(show_peaks) && !is.null(chrom$peaks) && nrow(chrom$peaks) > 0) {
+    peaks_df <- chrom$peaks[!is.na(chrom$peaks$time), , drop = FALSE]
+    peaks_df$peak_id <- factor(seq_len(nrow(peaks_df)))
+    pal <- palette %||% hue_pal()(nrow(peaks_df))
 
-        pal <- palette %||% hue_pal()(nrow(peaks_df))
-        p <- p +
-            geom_vline(data = peaks_df,
-                    aes(xintercept = time, color = peak_id),
-                    linetype = "dotted", linewidth = 0.8, alpha = 0.9) +
-            scale_color_manual(values = pal, guide = "none")
+    p <- p +
+      geom_vline(
+        data = peaks_df,
+        aes(xintercept = time, color = peak_id),
+        linetype = "dotted", linewidth = 0.8, alpha = 0.9
+      ) +
+      scale_color_manual(values = pal, guide = "none")
 
-        # compute % area if requested
-        if (show_area_pct && "area" %in% names(peaks_df)) {
-            total_area <- sum(peaks_df$area, na.rm = TRUE)
-            peaks_df$area_pct <- (peaks_df$area / total_area) * 100
-        }
-        if (label_peaks) {
-            label_df <- peaks_df
-            label_df$label <- if (show_area_pct && "area_pct" %in% names(label_df)) {
-                sprintf("t=%.2f\n%.1f%%", label_df$time, label_df$area_pct)
-            } else {
-                sprintf("t=%.2f", label_df$time)
-            }
+    if (isTRUE(show_area_pct) && "area" %in% names(peaks_df)) {
+      total_area <- sum(peaks_df$area, na.rm = TRUE)
+      peaks_df$area_pct <- 100 * peaks_df$area / total_area
+    }
 
-            p <- p + geom_text(
-                data = label_df,
-                aes(x = time, y = max(df$intensity, na.rm = TRUE) * 1.05,
-                label = label, color = peak_id),
-                angle = 90, vjust = -0.5, size = 3, show.legend = FALSE
-                )
-            }
-        }
-    
+    if (isTRUE(label_peaks)) {
+      label_df <- peaks_df
+      label_df$label <- if (isTRUE(show_area_pct) && "area_pct" %in% names(label_df)) {
+        sprintf("t=%.2f\n%.1f%%", label_df$time, label_df$area_pct)
+      } else {
+        sprintf("t=%.2f", label_df$time)
+      }
 
+      p <- p + geom_text(
+        data = label_df,
+        aes(
+          x = time,
+          y = max(df$intensity, na.rm = TRUE) * 1.05,
+          label = label,
+          color = peak_id
+        ),
+        angle = 90, vjust = -0.4, size = 3, show.legend = FALSE
+      )
+    }
+  }
 
   p
 }
 
-# Export helper
+# ---- Export Helper ----
 save_plot <- function(p, file, fmt = c("png","tiff","eps"), width = 7, height = 4, dpi = 150) {
   fmt <- match.arg(fmt)
   dir.create(dirname(file), recursive = TRUE, showWarnings = FALSE)
@@ -111,8 +113,8 @@ save_plot <- function(p, file, fmt = c("png","tiff","eps"), width = 7, height = 
   }
 }
 
-# ---- Load R6 backend ----
-source("R/Chromatogram.R")  # uses your existing class
+# ---- Load Chromatogram R6 ----
+source("R/Chromatogram.R")
 
 # ---- UI ----
 ui <- page_fillable(
@@ -120,20 +122,21 @@ ui <- page_fillable(
   layout_sidebar(
     sidebar = sidebar(
       h4("Data"),
-      fileInput("csv", "Upload CSV (2 columns: time, intensity — no header needed)", accept = c(".csv")),
+      fileInput("csv", "Upload CSV (time, intensity — no header needed)", accept = c(".csv")),
       checkboxInput("use_demo", "Use demo data if no file", TRUE),
       hr(),
       h4("Peak Picking"),
-      sliderInput("min_height_frac", "Min height (fraction of max)", min = 0.01, max = 1, value = 0.1, step = 0.01),
-      numericInput("min_dist", "Min distance (points)", value = 5, min = 1, step = 1),
-      checkboxInput("show_area_pct", "Show area percentages", TRUE),
-      checkboxInput("show_fit", "Show fitted Gaussian", TRUE),
+      sliderInput("min_height_frac", "Min height (% of max)", min = 0.01, max = 1, value = 0.15, step = 0.01),
+      sliderInput("min_prom_frac",   "Min prominence (% of max)", min = 0, max = 1, value = 0.10, step = 0.01),
+      numericInput("min_dist_min",   "Min distance (minutes)", value = 0.25, min = 0, step = 0.05),
+      numericInput("min_width_min",  "Min width (minutes)", value = 0.10, min = 0, step = 0.05),
       checkboxInput("show_peaks", "Show peaks", TRUE),
-      checkboxInput("label_peaks", "Label peaks", TRUE),
+      checkboxInput("label_peaks", "Label peaks (t, % area)", TRUE),
+      checkboxInput("show_area_pct", "Show area percentages", TRUE),
+      checkboxInput("show_fit", "Show fitted Gaussian curve", TRUE),
       hr(),
       h4("Colors"),
-      colourInput("raw_col", "Raw", value = "#666666"),
-      colourInput("smooth_col", "Smoothed", value = "#1f77b4"),
+      colourInput("raw_col", "Raw", value = "#2c3e50"),
       selectInput("palette", "Peak palette",
                   choices = c("Auto (hue)" = "auto",
                               "Viridis" = "viridis",
@@ -166,49 +169,28 @@ ui <- page_fillable(
 # ---- Server ----
 server <- function(input, output, session) {
 
-  # THEME OVERRIDES for raw/smoothed lines
-  #update_geom_defaults("line", list(colour = input$raw_col))
-  observeEvent(input$raw_col,  update_geom_defaults("line", list(colour = input$raw_col)))
-  # We’ll set smoothed color by adding a new layer with that specific color
-
-  # Reactive data: file or demo
+  # ---- Reactive data (CSV or demo) ----
   data_reactive <- reactive({
     req(input$use_demo || !is.null(input$csv))
     if (!is.null(input$csv)) {
-        # Try reading CSV whether it has headers or not
-        suppressWarnings({
-            df <- tryCatch(
-                readr::read_csv(input$csv$datapath, col_names = FALSE, show_col_types = FALSE),
-                error = function(e) NULL
-            )
-        })
-
-        if (is.null(df)) {
-            showNotification("Error reading CSV file. Please check format.", type = "error")
-            return(NULL)
-        }
-        
-        # Expecting at least two columns (time, intensity)
-        if (ncol(df) < 2) {
-            showNotification("CSV must have at least two columns (time, intensity).", type = "error")
-            return(NULL)
-        }
-        
-        # Take only the first two columns
-        df <- df[, 1:2]
-        names(df) <- c("time", "intensity")
-
-        # Clean data (remove non-numeric rows, drop NAs)
-        df <- df[complete.cases(df$time, df$intensity), ]
-        df$time <- suppressWarnings(as.numeric(df$time))
-        df$intensity <- suppressWarnings(as.numeric(df$intensity))
-
-        df <- df[!is.na(df$time) & !is.na(df$intensity), ]
-
-        return(df)
+      suppressWarnings({
+        df <- tryCatch(readr::read_csv(input$csv$datapath, col_names = FALSE, show_col_types = FALSE),
+                       error = function(e) NULL)
+      })
+      if (is.null(df) || ncol(df) < 2) {
+        showNotification("CSV must have at least two numeric columns (time, intensity).", type = "error")
+        return(NULL)
+      }
+      df <- df[, 1:2]
+      names(df) <- c("time", "intensity")
+      df <- df[complete.cases(df), ]
+      df$time <- as.numeric(df$time)
+      df$intensity <- as.numeric(df$intensity)
+      df <- df[!is.na(df$time) & !is.na(df$intensity), ]
+      return(df)
     }
 
-    # demo synthetic
+    # Demo data
     set.seed(123)
     n <- 800
     time <- seq(0, 20, length.out = n)
@@ -218,61 +200,53 @@ server <- function(input, output, session) {
     data.frame(time, intensity)
   })
 
-  # Build Chromatogram object from current controls
+  # ---- Chromatogram Object ----
   chrom_reactive <- reactive({
     df <- data_reactive()
     obj <- Chromatogram$new(df$time, df$intensity)
-
-
-    # Fit single Gaussian just to show the overlay if desired (optional)
-    suppressWarnings( try(obj$fit_gaussian(), silent = TRUE) )
-
-    # Peaks
-    min_h <- input$min_height_frac * max(obj$smoothed, na.rm = TRUE)
-    obj$find_peaks(min_height = min_h, min_distance = input$min_dist)
+    suppressWarnings(try(obj$fit_gaussian(), silent = TRUE))
+    min_h <- input$min_height_frac * max(obj$intensity, na.rm = TRUE)
+    obj$find_peaks(min_height = min_h, min_distance = input$min_dist_min)
     obj$integrate_peaks()
     obj
   })
 
-  # Compute palette for peaks
+  # ---- Palette helper ----
   compute_palette <- function(n) {
     if (n <= 0) return(NULL)
     switch(input$palette,
-      "viridis" = viridis_pal()(n),
-      "warm"    = hue_pal(h = c(0,90))(n),
-      "cool"    = hue_pal(h = c(180,270))(n),
-      hue_pal()(n) # auto
-    )
+           "viridis" = viridis_pal()(n),
+           "warm"    = hue_pal(h = c(0,90))(n),
+           "cool"    = hue_pal(h = c(180,270))(n),
+           hue_pal()(n))
   }
 
-  # Current main plot
+  # ---- Main plot ----
   output$main_plot <- renderPlot({
     chrom <- chrom_reactive()
     pal <- compute_palette(nrow(chrom$peaks %||% data.frame()))
-    p <- build_plot(chrom, show_fit = input$show_fit,
-                    show_peaks = input$show_peaks,
-                    label_peaks = input$label_peaks,
-                    palette = pal,
-                    show_area_pct = input$show_area_pct)
-    # recolor base layers (raw/smoothed)
-    # p <- p +
-    #   scale_colour_identity() +
-      theme_minimal(base_size = 12)
-    # smoothed line recolor overlay
-    p$layers[[2]]$aes_params$colour <- input$smooth_col
+    p <- build_plot(
+      chrom,
+      show_fit = isTRUE(input$show_fit),
+      show_peaks = isTRUE(input$show_peaks),
+      label_peaks = isTRUE(input$label_peaks),
+      palette = pal,
+      show_area_pct = isTRUE(input$show_area_pct)
+    ) + theme_minimal(base_size = 12)
     p
   })
 
-  # Gallery store: list of plots (as params to rebuild) so exports are consistent
+  # ---- Gallery management ----
   rv <- reactiveValues(gallery = list())
 
   observeEvent(input$add_plot, {
     chrom <- chrom_reactive()
     cfg <- list(
-      chrom = chrom,  # contains data + peaks snapshot
-      show_fit = input$show_fit,
-      show_peaks = input$show_peaks,
-      label_peaks = input$label_peaks,
+      chrom = chrom,
+      show_fit = isTRUE(input$show_fit),
+      show_peaks = isTRUE(input$show_peaks),
+      label_peaks = isTRUE(input$label_peaks),
+      show_area_pct = isTRUE(input$show_area_pct),
       palette = compute_palette(nrow(chrom$peaks %||% data.frame()))
     )
     rv$gallery <- append(rv$gallery, list(cfg))
@@ -284,7 +258,6 @@ server <- function(input, output, session) {
     showNotification("Gallery cleared.", type = "warning")
   })
 
-  # Render gallery UI
   output$gallery_ui <- renderUI({
     if (length(rv$gallery) == 0) return(div("No plots yet."))
     tagList(
@@ -304,46 +277,29 @@ server <- function(input, output, session) {
     )
   })
 
-  # Render each gallery plot and wire up downloads
+  # ---- Render each gallery plot + downloads ----
   observe({
     lapply(seq_along(rv$gallery), function(i) {
       local({
         idx <- i
         cfg <- rv$gallery[[idx]]
-
         output[[paste0("plot_", idx)]] <- renderPlot({
-          p <- build_plot(cfg$chrom, cfg$show_fit, cfg$show_peaks, cfg$label_peaks, cfg$palette) +
+          p <- build_plot(cfg$chrom, cfg$show_fit, cfg$show_peaks, cfg$label_peaks,
+                          cfg$palette, cfg$show_area_pct) +
             theme_minimal(base_size = 12)
-          # recolor second layer (smoothed) to current UI color, if present
-          if (length(p$layers) >= 2) p$layers[[2]]$aes_params$colour <- input$smooth_col
           p
         })
-
-        # Downloads
-        output[[paste0("dl_", idx, "_png")]] <- downloadHandler(
-          filename = function() sprintf("plot_%02d.png", idx),
-          content = function(file) {
-            p <- build_plot(cfg$chrom, cfg$show_fit, cfg$show_peaks, cfg$label_peaks, cfg$palette) +
-              theme_minimal(base_size = 12)
-            save_plot(p, file, "png", width = input$w, height = input$h, dpi = input$dpi)
-          }
-        )
-        output[[paste0("dl_", idx, "_tiff")]] <- downloadHandler(
-          filename = function() sprintf("plot_%02d.tiff", idx),
-          content = function(file) {
-            p <- build_plot(cfg$chrom, cfg$show_fit, cfg$show_peaks, cfg$label_peaks, cfg$palette) +
-              theme_minimal(base_size = 12)
-            save_plot(p, file, "tiff", width = input$w, height = input$h, dpi = input$dpi)
-          }
-        )
-        output[[paste0("dl_", idx, "_eps")]] <- downloadHandler(
-          filename = function() sprintf("plot_%02d.eps", idx),
-          content = function(file) {
-            p <- build_plot(cfg$chrom, cfg$show_fit, cfg$show_peaks, cfg$label_peaks, cfg$palette) +
-              theme_minimal(base_size = 12)
-            save_plot(p, file, "eps", width = input$w, height = input$h, dpi = input$dpi)
-          }
-        )
+        for (fmt in c("png", "tiff", "eps")) {
+          output[[paste0("dl_", idx, "_", fmt)]] <- downloadHandler(
+            filename = function() sprintf("plot_%02d.%s", idx, fmt),
+            content = function(file) {
+              p <- build_plot(cfg$chrom, cfg$show_fit, cfg$show_peaks, cfg$label_peaks,
+                              cfg$palette, cfg$show_area_pct) +
+                theme_minimal(base_size = 12)
+              save_plot(p, file, fmt, width = input$w, height = input$h, dpi = input$dpi)
+            }
+          )
+        }
       })
     })
   })
