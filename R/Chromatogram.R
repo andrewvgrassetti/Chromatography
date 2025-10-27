@@ -65,27 +65,22 @@ Chromatogram <- R6Class("Chromatogram",
       invisible(self)
     },
 
-    auc = function(use = c("smoothed", "raw", "baseline")) {
-      use <- match.arg(use)
-      y <- switch(use,
-        smoothed = self$smoothed,
-        raw = self$intensity,
-        baseline = self$baseline_subtracted
-      )
-      if (is.null(y)) stop("No data available for ", use)
-      area <- pracma::trapz(self$time, y)
-      message(sprintf("AUC (%s): %.3f", use, area))
+    auc = function(use = "raw") {
+      area <- pracma::trapz(self$time, self$intensity)
+      message(sprintf("AUC: %f", area))
       return(area)
-    },
+      },
     
     find_peaks = function(min_height = NULL, min_distance = 5) {
-      if (is.null(self$smoothed)) {
-        stop("Smooth the signal before finding peaks.")
+      # Use raw intensity instead of smoothed data
+      if (is.null(self$intensity)) {
+        stop("No intensity data available for peak finding.")
       }
 
+      # Use pracma::findpeaks on the raw signal
       peaks <- pracma::findpeaks(
-        self$smoothed,
-        minpeakheight = min_height %||% (0.1 * max(self$smoothed, na.rm = TRUE)),
+        self$intensity,
+        minpeakheight = min_height %||% (0.1 * max(self$intensity, na.rm = TRUE)),
         minpeakdistance = min_distance
       )
 
@@ -100,7 +95,7 @@ Chromatogram <- R6Class("Chromatogram",
         message(nrow(peaks_df), " peaks detected.")
       }
       invisible(self)
-    },
+      },
 
     integrate_peaks = function() {
       if (is.null(self$peaks)) stop("No peaks detected. Run $find_peaks() first.")
