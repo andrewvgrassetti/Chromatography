@@ -15,6 +15,7 @@ Chromatogram <- R6Class("Chromatogram",
     smoothed = NULL,
     fit_params = NULL,
     baseline_subtracted = NULL,
+    peaks = NULL,
 
     initialize = function(time, intensity) {
       stopifnot(length(time) == length(intensity))
