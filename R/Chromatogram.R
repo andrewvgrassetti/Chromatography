@@ -28,22 +28,31 @@ Chromatogram <- R6Class("Chromatogram",
     },
 
     fit_gaussian = function() {
-      if (is.null(self$smoothed))
-        stop("Smooth the signal first with $smooth().")
-
-      gaussian_model <- function(x, a, b, c)
-        a * exp(-((x - b)^2) / (2 * c^2))
-
-      start <- list(a = max(self$smoothed),
-                    b = self$time[which.max(self$smoothed)],
-                    c = 1)
-
-      fit <- minpack.lm::nlsLM(self$smoothed ~ gaussian_model(self$time, a, b, c),
-                               start = start)
-      self$fit_params <- coef(fit)
-      message("Gaussian peak fitted.")
-      invisible(self)
-    },
+        if (is.null(self$smoothed))
+            stop("Smooth the signal first with $smooth().")
+        gaussian_model <- function(x, a, b, c)
+            a * exp(-((x - b)^2) / (2 * c^2))
+        
+        # create a data frame for nlsLM to use
+        df <- data.frame(
+            time = self$time,
+            smoothed = self$smoothed
+            )
+            
+        # reasonable starting guesses
+        start <- list(
+                a = max(df$smoothed, na.rm = TRUE),
+                b = df$time[which.max(df$smoothed)],
+                c = (max(df$time) - min(df$time)) / 10
+                )
+                
+        fit <- minpack.lm::nlsLM(smoothed ~ gaussian_model(time, a, b, c),
+                data = df,
+                start = start)
+        self$fit_params <- coef(fit)
+        message("Gaussian peak fitted successfully.")
+        invisible(self)
+        },
 
     baseline = function(method = c("min", "median")) {
       method <- match.arg(method)
