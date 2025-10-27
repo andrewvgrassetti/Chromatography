@@ -5,6 +5,8 @@ library(signal)
 library(minpack.lm)
 library(pracma)
 
+`%||%` <- function(a, b) if (!is.null(a)) a else b
+
 # R6 class definition
 Chromatogram <- R6Class("Chromatogram",
   public = list(
@@ -74,7 +76,51 @@ Chromatogram <- R6Class("Chromatogram",
       message(sprintf("AUC (%s): %.3f", use, area))
       return(area)
     },
+    
+    find_peaks = function(min_height = NULL, min_distance = 5) {
+      if (is.null(self$smoothed)) {
+        stop("Smooth the signal before finding peaks.")
+      }
 
+      peaks <- pracma::findpeaks(
+        self$smoothed,
+        minpeakheight = min_height %||% (0.1 * max(self$smoothed, na.rm = TRUE)),
+        minpeakdistance = min_distance
+      )
+
+      if (is.null(peaks)) {
+        message("⚠️ No peaks detected.")
+        self$peaks <- NULL
+      } else {
+        colnames(peaks) <- c("height", "position", "start", "end")
+        peaks_df <- as.data.frame(peaks)
+        peaks_df$time <- self$time[peaks_df$position]
+        self$peaks <- peaks_df
+        message(nrow(peaks_df), " peaks detected.")
+      }
+      invisible(self)
+    },
+
+    integrate_peaks = function() {
+      if (is.null(self$peaks)) stop("No peaks detected. Run $find_peaks() first.")
+      results <- self$peaks
+      results$area <- mapply(function(start, end) {
+        start_idx <- max(1, start)
+        end_idx <- min(length(self$time), end)
+        pracma::trapz(self$time[start_idx:end_idx], self$smoothed[start_idx:end_idx])
+      }, self$peaks$start, self$peaks$end)
+      self$peaks <- results
+      message("Peak integration complete.")
+      invisible(self)
+    },
+
+    summarize_peaks = function() {
+      if (is.null(self$peaks)) stop("No peak data available.")
+      df <- self$peaks[, c("time", "height", "area")]
+      print(df)
+      return(df)
+    },
+    
     plot = function(save_path = NULL) {
         df <- data.frame(
             time = self$time,
