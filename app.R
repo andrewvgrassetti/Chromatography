@@ -12,6 +12,9 @@ library(purrr)
 library(tidyr)
 library(stringr)
 
+# FIXED: use viridis for distinct defaults (fallback to hue if missing)
+suppressWarnings({ if (!requireNamespace("viridisLite", quietly = TRUE)) { } })
+
 suppressWarnings({
   if (!requireNamespace("ragg", quietly = TRUE)) {
     message("Tip: install.packages('ragg') for high-quality TIFF/PNG exports.")
@@ -116,6 +119,11 @@ ui <- page_fillable(
       hr(),
 
       h4("Export"),
+      selectInput("plot_fmt", "Save plot as", choices = c("TIFF" = "tiff", "PNG" = "png", "EPS" = "eps"), selected = "png"),
+      numericInput("plot_w", "Width (inches)", value = 7, min = 1, step = 0.5),
+      numericInput("plot_h", "Height (inches)", value = 5, min = 1, step = 0.5),
+      numericInput("plot_dpi", "Resolution (DPI)", value = 300, min = 72, step = 10),
+      downloadButton("download_plot", "Save plot"),
       downloadButton("download_summary", "Download summary CSV")
     ),
 
@@ -200,11 +208,7 @@ server <- function(input, output, session) {
 
       # find/integrate peaks
       ch$find_peaks(
-        min_height      = min_h_abs,
-        min_distance_min = input$min_dist_min %||% 0.2,
-        min_width_min    = input$min_width_min %||% 0.10,
-        min_prom_frac    = 0.05
-      )
+        min_height      = min_h_abs)
       if (!is.null(ch$peaks)) ch$integrate_peaks()
 
       # store label (nickname or filename)
@@ -224,102 +228,145 @@ server <- function(input, output, session) {
   series_colors <- reactive({
     lst <- chrom_list()
     n <- length(lst)
-    setNames(hue_pal()(n), vapply(lst, function(z) z$label, ""))
-  })
+    if (n == 0) return(character())
+    
+    labels <- vapply(lst, function(z) z$label, "")
+    
+    # FIXED: perceptually-uniform defaults
+    pal <- if (requireNamespace("viridisLite", quietly = TRUE)) {
+      viridisLite::viridis(n, option = "D", begin = 0, end = 0.95)
+      } else {
+        scales::hue_pal()(n)
+        }
+        
+        # FIXED: base color picker overrides the first series
+        base <- input$base_col %||% pal[1]
+        pal[1] <- base
+        
+        # If there is ONLY ONE series, color all lines that color
+        if (n == 1) pal[] <- base
+        setNames(pal, labels)
+        })
+
+    # NEW: build the current plot once so we can reuse it for saving
+    build_main_plot <- reactive({
+      lst <- chrom_list()
+      validate(need(length(lst) > 0, "Load at least one CSV (or enable demo)."))
+      cols <- series_colors()
+
+      if (identical(input$display_mode, "overlay") || length(lst) == 1) {
+        df_all <- dplyr::bind_rows(lapply(lst, function(z) {
+          data.frame(time = z$chrom$time, intensity = z$chrom$intensity, label = z$label, stringsAsFactors = FALSE)
+        }))
+        p <- ggplot(df_all, aes(x = time, y = intensity, color = label)) +
+          geom_line(linewidth = 0.9) +
+          scale_color_manual(values = cols) +
+          labs(x = "Time (min)", y = "Intensity", color = "Sample") +
+          theme_classic(base_size = 13)
+
+        if (isTRUE(input$show_peaks)) {
+          pk_all <- dplyr::bind_rows(lapply(lst, function(z) {
+            if (is.null(z$chrom$peaks) || !nrow(z$chrom$peaks)) return(NULL)
+            cbind(z$chrom$peaks, label = z$label, stringsAsFactors = FALSE)
+          }))
+          if (!is.null(pk_all) && nrow(pk_all) > 0) {
+            ymax <- df_all %>% dplyr::group_by(label) %>% dplyr::summarise(ymax = max(intensity, na.rm = TRUE))
+            pk_all <- dplyr::left_join(pk_all, ymax, by = "label")
+            p <- p + geom_vline(data = pk_all, aes(xintercept = time, color = label), linetype = "dotted", linewidth = 0.6)
+            if (isTRUE(input$label_peaks)) {
+              pk_all$lab <- if (isTRUE(input$show_area_pct) && "rel_area_pct" %in% names(pk_all)) {
+                sprintf("t=%.2f, %.1f%%", pk_all$time, pk_all$rel_area_pct)
+              } else {
+                sprintf("t=%.2f", pk_all$time)
+              }
+              p <- p + geom_text(
+                data = pk_all,
+                aes(x = time, y = ymax * 1.04, label = lab, color = label),
+                angle = 0, vjust = 0, size = 3, show.legend = FALSE
+              )
+            }
+          }
+        }
+        return(p)
+      } else {
+        df_all <- dplyr::bind_rows(lapply(lst, function(z) {
+          data.frame(time = z$chrom$time, intensity = z$chrom$intensity, label = z$label, stringsAsFactors = FALSE)
+        }))
+        p <- ggplot(df_all, aes(x = time, y = intensity)) +
+          geom_line(aes(color = label), linewidth = 0.9, show.legend = FALSE) +
+          scale_color_manual(values = cols) +
+          labs(x = "Time (min)", y = "Intensity") +
+          facet_wrap(~ label, scales = "free_y", ncol = min(2, max(1, ceiling(length(lst)/2)))) +
+          theme_classic(base_size = 13)
+
+        if (isTRUE(input$show_peaks)) {
+          pk_list <- lapply(lst, function(z) {
+            if (is.null(z$chrom$peaks) || !nrow(z$chrom$peaks)) return(NULL)
+            cbind(z$chrom$peaks, label = z$label, stringsAsFactors = FALSE)
+          })
+          pk_all <- dplyr::bind_rows(pk_list)
+          if (!is.null(pk_all) && nrow(pk_all) > 0) {
+            ymax <- df_all %>% dplyr::group_by(label) %>% dplyr::summarise(ymax = max(intensity, na.rm = TRUE))
+            pk_all <- dplyr::left_join(pk_all, ymax, by = "label")
+            p <- p +
+              geom_vline(data = pk_all, aes(xintercept = time), linetype = "dotted", linewidth = 0.6, color = "gray40")
+            if (isTRUE(input$label_peaks)) {
+              pk_all$lab <- if (isTRUE(input$show_area_pct) && "rel_area_pct" %in% names(pk_all)) {
+                sprintf("t=%.2f, %.1f%%", pk_all$time, pk_all$rel_area_pct)
+              } else {
+                sprintf("t=%.2f", pk_all$time)
+              }
+              p <- p + geom_text(
+                data = pk_all,
+                aes(x = time, y = ymax * 1.04, label = lab),
+                angle = 0, vjust = 0, size = 3
+              )
+            }
+          }
+        }
+        return(p)
+      }
+    })
 
   # Main plot: overlay or separate
-  output$main_plot <- renderPlot({
-    lst <- chrom_list()
-    validate(need(length(lst) > 0, "Load at least one CSV (or enable demo)."))
+  output$main_plot <- renderPlot({ build_main_plot() })
+    
+    # NEW: save the exact plot as TIFF / PNG / EPS using best device available
+  output$download_plot <- downloadHandler(
+    filename = function() {
+      ext <- switch(input$plot_fmt, png = "png", tiff = "tif", eps = "eps")
+      paste0("chromatograms_", format(Sys.time(), "%Y%m%d-%H%M%S"), ".", ext)
+    },
+    content = function(file) {
+      p <- build_main_plot()
+      w <- input$plot_w %||% 7
+      h <- input$plot_h %||% 5
+      dpi <- input$plot_dpi %||% 300
+      fmt <- input$plot_fmt %||% "png"
 
-    cols <- series_colors()
-
-    if (identical(input$display_mode, "overlay") || length(lst) == 1) {
-      # overlay: bind rows with label and color by label
-      df_all <- dplyr::bind_rows(lapply(lst, function(z) {
-        data.frame(time = z$chrom$time, intensity = z$chrom$intensity, label = z$label, stringsAsFactors = FALSE)
-      }))
-
-      p <- ggplot(df_all, aes(x = time, y = intensity, color = label)) +
-        geom_line(linewidth = 0.9) +
-        scale_color_manual(values = cols) +
-        labs(x = "Time (min)", y = "Intensity", color = "Sample") +
-        theme_classic(base_size = 13)
-
-      # peaks + horizontal labels
-      if (isTRUE(input$show_peaks)) {
-        pk_all <- dplyr::bind_rows(lapply(lst, function(z) {
-          if (is.null(z$chrom$peaks) || !nrow(z$chrom$peaks)) return(NULL)
-          cbind(z$chrom$peaks, label = z$label, stringsAsFactors = FALSE)
-        }))
-        if (!is.null(pk_all) && nrow(pk_all) > 0) {
-          ymax <- df_all %>% dplyr::group_by(label) %>% dplyr::summarise(ymax = max(intensity, na.rm = TRUE))
-          pk_all <- dplyr::left_join(pk_all, ymax, by = "label")
-          p <- p +
-            geom_vline(data = pk_all, aes(xintercept = time, color = label), linetype = "dotted", linewidth = 0.6)
-
-          if (isTRUE(input$label_peaks)) {
-            pk_all$lab <- if (isTRUE(input$show_area_pct) && "rel_area_pct" %in% names(pk_all)) {
-              sprintf("t=%.2f, %.1f%%", pk_all$time, pk_all$rel_area_pct)
-            } else {
-              sprintf("t=%.2f", pk_all$time)
-            }
-            p <- p + geom_text(
-              data = pk_all,
-              aes(x = time, y = ymax * 1.04, label = lab, color = label),
-              angle = 0, vjust = 0, size = 3, show.legend = FALSE
-            )
-          }
+      # Prefer ragg for rasters, Cairo for EPS
+      if (fmt == "png") {
+        if (requireNamespace("ragg", quietly = TRUE)) {
+          ggplot2::ggsave(file, plot = p, device = ragg::agg_png, width = w, height = h, units = "in", dpi = dpi)
+        } else {
+          ggplot2::ggsave(file, plot = p, device = "png",     width = w, height = h, units = "in", dpi = dpi)
+        }
+      } else if (fmt == "tiff") {
+        if (requireNamespace("ragg", quietly = TRUE)) {
+          ggplot2::ggsave(file, plot = p, device = ragg::agg_tiff, width = w, height = h, units = "in", dpi = dpi, compression = "lzw")
+        } else {
+          ggplot2::ggsave(file, plot = p, device = "tiff",    width = w, height = h, units = "in", dpi = dpi, compression = "lzw")
+        }
+      } else if (fmt == "eps") {
+        # EPS via cairo if available (better text), else base postscript
+        if (capabilities("cairo")) {
+          ggplot2::ggsave(file, plot = p, device = cairo_ps, width = w, height = h, units = "in")
+        } else {
+          ggplot2::ggsave(file, plot = p, device = "eps",     width = w, height = h, units = "in")
         }
       }
-
-      p
-
-    } else {
-      # separate panels: facet by label
-      df_all <- dplyr::bind_rows(lapply(lst, function(z) {
-        data.frame(time = z$chrom$time, intensity = z$chrom$intensity, label = z$label, stringsAsFactors = FALSE)
-      }))
-
-      p <- ggplot(df_all, aes(x = time, y = intensity)) +
-        geom_line(aes(color = label), linewidth = 0.9, show.legend = FALSE) +
-        scale_color_manual(values = cols) +
-        labs(x = "Time (min)", y = "Intensity") +
-        facet_wrap(~ label, scales = "free_y", ncol = min(2, max(1, ceiling(length(lst)/2)))) +
-        theme_classic(base_size = 13)
-
-      if (isTRUE(input$show_peaks)) {
-        pk_list <- lapply(lst, function(z) {
-          if (is.null(z$chrom$peaks) || !nrow(z$chrom$peaks)) return(NULL)
-          cbind(z$chrom$peaks, label = z$label, stringsAsFactors = FALSE)
-        })
-        pk_all <- dplyr::bind_rows(pk_list)
-        if (!is.null(pk_all) && nrow(pk_all) > 0) {
-          # compute per-panel ymax for text placement
-          ymax <- df_all %>% dplyr::group_by(label) %>% dplyr::summarise(ymax = max(intensity, na.rm = TRUE))
-          pk_all <- dplyr::left_join(pk_all, ymax, by = "label")
-
-          p <- p +
-            geom_vline(data = pk_all, aes(xintercept = time), linetype = "dotted", linewidth = 0.6, color = "gray40")
-
-          if (isTRUE(input$label_peaks)) {
-            pk_all$lab <- if (isTRUE(input$show_area_pct) && "rel_area_pct" %in% names(pk_all)) {
-              sprintf("t=%.2f, %.1f%%", pk_all$time, pk_all$rel_area_pct)
-            } else {
-              sprintf("t=%.2f", pk_all$time)
-            }
-            p <- p + geom_text(
-              data = pk_all,
-              aes(x = time, y = ymax * 1.04, label = lab),
-              angle = 0, vjust = 0, size = 3
-            )
-          }
-        }
-      }
-
-      p
     }
-  })
+  )
 
   # ---- Summary CSV (one row per file) ----
   output$download_summary <- downloadHandler(

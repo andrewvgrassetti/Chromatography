@@ -66,83 +66,122 @@ Chromatogram <- R6Class("Chromatogram",
 
     # NOTE: thresholds are in *minutes* (distance/width) and absolute intensity for height
     find_peaks = function(min_height = NULL,
-                          min_distance_min = 0.2,
-                          min_width_min = 0.1,
-                          min_prom_frac = 0.05) {
+                      # kept for API compatibility; ignored
+                      min_distance_min = NULL,
+                      min_width_min    = NULL,
+                      min_prom_frac    = NULL) {
 
-      if (is.null(self$intensity) || is.null(self$time)) {
-        stop("No data available for peak finding.")
-      }
+  if (is.null(self$intensity) || is.null(self$time))
+    stop("No data available for peak finding.")
 
-      dt <- suppressWarnings(median(diff(self$time), na.rm = TRUE))
-      if (!is.finite(dt) || dt <= 0) dt <- 1
+  # 1) Work on smoothed signal (robust to noise); fall back to raw if needed
+  y <- as.numeric(self$smoothed %||% self$intensity)
+  x <- as.numeric(self$time)
+  n <- length(y)
+  if (n < 3L) { self$peaks <- NULL; return(invisible(self)) }
 
-      dist_pts  <- max(1L, as.integer(ceiling(min_distance_min / dt)))
-      width_pts <- max(1L, as.integer(ceiling(min_width_min   / dt)))
+  # 2) Absolute height threshold (the app already converts % of max to an absolute)
+  ymax <- suppressWarnings(max(y, na.rm = TRUE))
+  if (!is.finite(ymax)) { self$peaks <- NULL; return(invisible(self)) }
+  min_height_abs <- min_height %||% (0.10 * ymax)
 
-      y <- as.numeric(self$intensity)
-      ymax <- max(y, na.rm = TRUE)
-      min_height_abs <- min_height %||% (0.10 * ymax)
-      min_prom_abs   <- min_prom_frac * ymax
+  # 3) Identify local maxima (plateau-safe)
+  #    We look for rising -> falling transitions; if flat-top, pick the midpoint.
+  dy  <- diff(y)
+  sdy <- sign(dy)
 
-      pk <- pracma::findpeaks(y,
-                              minpeakheight   = min_height_abs,
-                              minpeakdistance = dist_pts,
-                              threshold       = min_prom_abs)
+  # candidate "turning points" where slope switches from >0 to <=0
+  r2f <- which(c(sdy, NA) <= 0 & c(NA, sdy) > 0)
+  r2f <- r2f[is.finite(r2f)]
 
-      if (is.null(pk)) {
-        self$peaks <- NULL
-        return(invisible(self))
-      }
+  pick_plateau_mid <- function(idx) {
+    L <- idx; R <- idx
+    # expand left/right while values equal to the candidate (flat top)
+    while (L > 1L && y[L - 1L] == y[idx]) L <- L - 1L
+    while (R < n  && y[R + 1L] == y[idx]) R <- R + 1L
+    as.integer(round((L + R) / 2))
+  }
 
-      colnames(pk) <- c("height","position","start","end")
-      df <- as.data.frame(pk)
-
-      n <- length(y)
-      df$start    <- pmax(1L, pmin(n, as.integer(df$start)))
-      df$end      <- pmax(1L, pmin(n, as.integer(df$end)))
-      df$position <- pmax(1L, pmin(n, as.integer(df$position)))
-
-      df$time       <- self$time[df$position]
-      df$width_pts  <- pmax(0L, df$end - df$start + 1L)
-      df$width_min  <- df$width_pts * dt
-      bound_base    <- pmax(y[df$start], y[df$end])
-      df$prominence <- df$height - bound_base
-
-      keep <- (df$width_min >= min_width_min) &
-              (df$prominence >= min_prom_abs) &
-              is.finite(df$height) & is.finite(df$time)
-
-      df <- df[keep, , drop = FALSE]
-      df <- df[order(df$time), , drop = FALSE]
-
-      self$peaks <- if (nrow(df)) df else NULL
-      invisible(self)
-    },
-
-    integrate_peaks = function(min_width_pts = 3L) {
-      if (is.null(self$peaks)) stop("No peaks detected. Run $find_peaks() first.")
-
-      res <- self$peaks
-      res$area <- mapply(function(s, e) {
-        s <- as.integer(max(1, min(s, length(self$time))))
-        e <- as.integer(max(1, min(e, length(self$time))))
-        if ((e - s) < min_width_pts) return(NA_real_)
-        x <- as.numeric(self$time[s:e]); y <- as.numeric(self$intensity[s:e])
-        if (length(x) < 2 || anyNA(x) || anyNA(y)) return(NA_real_)
-        tryCatch(pracma::trapz(x, y), error = function(.) NA_real_)
-      }, res$start, res$end)
-
-      res <- res[is.finite(res$area) & res$area > 0, , drop = FALSE]
-
-      # add relative area (% of total)
-      if (nrow(res)) {
-        total <- sum(res$area, na.rm = TRUE)
-        res$rel_area_pct <- if (total > 0) (res$area / total) * 100 else NA_real_
-      }
-
-      self$peaks <- res
-      invisible(self)
+  cand <- integer(0)
+  for (i in r2f) {
+    if (i <= 1L || i >= n) next
+    ii <- if (y[i] == y[i - 1L] || y[i] == y[i + 1L]) pick_plateau_mid(i) else i
+    if (ii <= 1L || ii >= n) next
+    # local max, finite, and above height threshold
+    if (is.finite(y[ii]) && y[ii] >= y[ii - 1L] && y[ii] > y[ii + 1L] && y[ii] >= min_height_abs) {
+      cand <- c(cand, ii)
     }
+  }
+  cand <- sort(unique(cand))
+  if (!length(cand)) { self$peaks <- NULL; return(invisible(self)) }
+
+  # 4) Find surrounding local minima to define integration bounds
+  #    falling -> rising transitions; also treat the edges as minima sentinels.
+  f2r  <- which(c(sdy, NA) >= 0 & c(NA, sdy) < 0)
+  mins <- sort(unique(c(1L, f2r, n)))
+
+  left_min_for  <- function(idx) mins[max(1L, findInterval(idx, mins))]
+  right_min_for <- function(idx) {
+    pos <- findInterval(idx, mins)
+    if (pos + 1L <= length(mins)) mins[pos + 1L] else n
+  }
+
+  # 5) Build the peaks data.frame
+  df <- data.frame(
+    position = as.integer(cand),
+    time     = x[cand],
+    height   = y[cand],
+    stringsAsFactors = FALSE
+  )
+
+  df$start <- vapply(df$position, left_min_for,  integer(1))
+  df$end   <- vapply(df$position, right_min_for, integer(1))
+
+  # Ensure valid bounds and at least 2 points for integration later
+  df$start <- pmax(1L, pmin(df$start, n - 1L))
+  df$end   <- pmax(df$start + 1L, pmin(df$end, n))
+
+  # Sort by time for stable labeling
+  df <- df[order(df$time), , drop = FALSE]
+
+  self$peaks <- if (nrow(df)) df else NULL
+  invisible(self)
+},
+
+  # FIXED: Integrate areas between surrounding minima using trapezoidal rule.
+  #        Relative area = (area / total_area) * 100.
+  integrate_peaks = function() {
+    if (is.null(self$peaks) || !nrow(self$peaks)) {
+      stop("No peaks detected. Run $find_peaks() first.")
+    }
+
+    res <- self$peaks
+
+    res$area <- mapply(function(s, e) {
+      # clamp to valid range
+      s <- as.integer(max(1, min(s, length(self$time))))
+      e <- as.integer(max(1, min(e, length(self$time))))
+      # need at least 2 points to integrate
+      if ((e - s + 1L) < 2L) return(NA_real_)
+      xx <- as.numeric(self$time[s:e])
+      yy <- as.numeric(self$intensity[s:e])  # integrate RAW intensity
+      if (length(xx) < 2 || anyNA(xx) || anyNA(yy)) return(NA_real_)
+      # trapezoidal area
+      tryCatch(pracma::trapz(xx, yy), error = function(.) NA_real_)
+    }, res$start, res$end)
+
+    # keep only valid, positive areas
+    res <- res[is.finite(res$area) & res$area > 0, , drop = FALSE]
+
+    # relative area percentage
+    if (nrow(res)) {
+      total <- sum(res$area, na.rm = TRUE)
+      res$rel_area_pct <- if (is.finite(total) && total > 0) (res$area / total) * 100 else NA_real_
+    }
+
+    self$peaks <- res
+    invisible(self)
+  }
+
   )
 )
