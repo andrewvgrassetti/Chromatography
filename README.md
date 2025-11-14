@@ -1,13 +1,114 @@
-# Chromatography Tools
-An R6-based chromatography analysis toolkit.
+# Chromatography Peak Analysis App
+
+An interactive **R Shiny application** for visualizing, detecting, and integrating peaks in chromatographic data.  
+Upload one or multiple CSV files containing `(time, intensity)` pairs and the app performs smoothing, peak detection, trapezoidal integration, and percentage area calculation.
 
 ---
 
-## 🧱 Environment Setup
+## Features
 
-This project uses **`renv`** for reproducible R package management.  
-To ensure all required dependencies are installed, run the setup script once after cloning:
+- **Peak detection**
+  - Height-only threshold (% of max signal)
+  - Savitzky–Golay smoothing for noise reduction
+  - Robust trapezoidal peak integration (pracma::trapz)
+  - Automated relative area (%) calculation
 
+- **Visualization**
+  - Overlay or separate-panel modes
+  - Automatic, balanced viridis color palette
+  - Optional base color override
+  - Peak labels with optional % areas
+
+- **Export**
+  - Summary CSV with peak times and relative areas
+  - Plot export as **PNG**, **TIFF**, or **EPS**
+
+- **Demo data** included for quick testing
+
+---
+
+## Installation
+
+### Clone the repository
 ```bash
-Rscript scripts/setup_environment.R
+git clone https://github.com/andrewvgrassetti/Chromatography.git
+cd Chromatography
 
+### Install Dependencies
+
+#Open R an run:
+
+install.packages(c(
+  "shiny","bslib","readr","ggplot2","colourpicker","scales",
+  "dplyr","purrr","tidyr","stringr","signal","minpack.lm","pracma","viridisLite"
+))
+# Optional: high-quality graphics
+install.packages(c("ragg","Cairo"))
+
+#Alternatively, if using renv:
+install.packages("renv")
+renv::restore()
+
+### Running the App
+library(shiny)
+shiny::runApp(".")
+
+A browser window will open automatically.
+If not, copy the printed URL (e.g., http://127.0.0.1:7428) into your browser.
+
+Input Format
+
+Each chromatogram file must be a 2-column CSV:
+
+time	intensity
+0.00	12.3
+0.01	12.9
+...	...
+
+Time in minutes (or any consistent unit)
+
+Intensity in arbitrary units
+
+Multiple files may be uploaded simultaneously.
+
+Output
+Summary CSV
+
+One row per file including:
+
+total number of peaks
+
+per-peak times
+
+per-peak relative area (%)
+
+Plot export
+
+Available formats:
+
+###Testing
+
+Run automated tests:
+Rscript scripts/test_chrom.R
+
+
+Expected output includes checks for:
+peak count accuracy
+integration correctness
+stability with noise
+
+
+PNG
+TIFF
+EPS
+with adjustable size and DPI.
+
+Chromatography/
+├── app.R                  # Main Shiny application
+├── R/
+│   └── Chromatogram.R     # R6 class for smoothing, peak detection, integration
+├── scripts/
+│   ├── test_chrom.R       # Automated testing for integration & detection
+│   └── make_5peak_test.R  # Synthetic chromatogram generator
+├── renv.lock              # Package version snapshot (optional)
+└── README.md
