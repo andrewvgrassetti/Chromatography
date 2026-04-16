@@ -1,114 +1,113 @@
 # Chromatography Peak Analysis App
 
-An interactive **R Shiny application** for visualizing, detecting, and integrating peaks in chromatographic data.  
-Upload one or multiple CSV files containing `(time, intensity)` pairs and the app performs smoothing, peak detection, trapezoidal integration, and percentage area calculation.
+An R Shiny app for chromatography peak detection, integration, and visualization from `(time, intensity)` CSV files.
 
----
+## What it does
 
-## Features
+- Detects peaks from smoothed signals
+- Integrates peak areas (trapezoidal rule)
+- Calculates relative area percentages
+- Plots multiple chromatograms (overlay or separate panels)
+- Exports:
+  - Peak summary CSV
+  - Plot as PNG, TIFF, or EPS
 
-- **Peak detection**
-  - Height-only threshold (% of max signal)
-  - Savitzky–Golay smoothing for noise reduction
-  - Robust trapezoidal peak integration (pracma::trapz)
-  - Automated relative area (%) calculation
+## Repository structure
 
-- **Visualization**
-  - Overlay or separate-panel modes
-  - Automatic, balanced viridis color palette
-  - Optional base color override
-  - Peak labels with optional % areas
+```text
+Chromatography/
+├── app.R                    # Shiny app entrypoint
+├── R/
+│   └── Chromatogram.R       # Core R6 analysis class
+├── scripts/
+│   ├── setup_environment.R  # renv-based dependency restore
+│   └── test_chrom.R         # Basic analysis test script
+├── renv.lock                # Locked dependency snapshot
+└── README.md
+```
 
-- **Export**
-  - Summary CSV with peak times and relative areas
-  - Plot export as **PNG**, **TIFF**, or **EPS**
+## Prerequisites
 
-- **Demo data** included for quick testing
+- R installed locally
+- Internet access for first-time package installation
 
----
+## Setup
 
-## Installation
+From the repository root:
 
-### Clone the repository
 ```bash
-git clone https://github.com/andrewvgrassetti/Chromatography.git
-cd Chromatography
+cd /path/to/Chromatography
+```
 
-### Install Dependencies
+### Recommended (reproducible) setup with `renv`
 
-#Open R an run:
+```bash
+Rscript scripts/setup_environment.R
+```
 
+### Alternative: install packages manually in R
+
+```r
 install.packages(c(
-  "shiny","bslib","readr","ggplot2","colourpicker","scales",
-  "dplyr","purrr","tidyr","stringr","signal","minpack.lm","pracma","viridisLite"
+  "shiny", "bslib", "readr", "ggplot2", "colourpicker", "scales",
+  "dplyr", "purrr", "tidyr", "stringr",
+  "R6", "signal", "minpack.lm", "pracma", "viridisLite"
 ))
-# Optional: high-quality graphics
-install.packages(c("ragg","Cairo"))
 
-#Alternatively, if using renv:
-install.packages("renv")
-renv::restore()
+# Optional for higher-quality exports:
+install.packages(c("ragg", "Cairo"))
+```
 
-### Running the App
+## Run the app
+
+```bash
+Rscript -e "shiny::runApp('.')"
+```
+
+Or in an R session:
+
+```r
 library(shiny)
 shiny::runApp(".")
+```
 
-A browser window will open automatically.
-If not, copy the printed URL (e.g., http://127.0.0.1:7428) into your browser.
+If a browser does not open automatically, use the local URL printed in the console.
 
-Input Format
+## Input file format
 
-Each chromatogram file must be a 2-column CSV:
+Upload one or more CSV files with exactly two numeric columns:
 
-time	intensity
-0.00	12.3
-0.01	12.9
-...	...
+1. `time`
+2. `intensity`
 
-Time in minutes (or any consistent unit)
+Example:
 
-Intensity in arbitrary units
+```text
+0.00,12.3
+0.01,12.9
+0.02,13.1
+```
 
-Multiple files may be uploaded simultaneously.
+Notes:
+- No header is required
+- Time units can be minutes (or any consistent unit)
+- Non-numeric/incomplete rows are ignored
 
-Output
-Summary CSV
+## Testing
 
-One row per file including:
+Run the included test script from the repository root:
 
-total number of peaks
-
-per-peak times
-
-per-peak relative area (%)
-
-Plot export
-
-Available formats:
-
-###Testing
-
-Run automated tests:
+```bash
 Rscript scripts/test_chrom.R
+```
 
+The script exercises smoothing, fitting, baseline/area calculations, and peak analysis with synthetic data.
 
-Expected output includes checks for:
-peak count accuracy
-integration correctness
-stability with noise
+## Troubleshooting
 
-
-PNG
-TIFF
-EPS
-with adjustable size and DPI.
-
-Chromatography/
-├── app.R                  # Main Shiny application
-├── R/
-│   └── Chromatogram.R     # R6 class for smoothing, peak detection, integration
-├── scripts/
-│   ├── test_chrom.R       # Automated testing for integration & detection
-│   └── make_5peak_test.R  # Synthetic chromatogram generator
-├── renv.lock              # Package version snapshot (optional)
-└── README.md
+- **`there is no package called ...`**  
+  Run `Rscript scripts/setup_environment.R` (or install missing packages manually).
+- **Plot export quality is poor**  
+  Install optional packages `ragg` and `Cairo`.
+- **No peaks detected**  
+  Lower **Min height (% of max)** in the app sidebar.
